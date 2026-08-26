@@ -20,10 +20,9 @@ class PlannerAgent:
         schema_hint = json.dumps(ProjectPlan.model_json_schema(), indent=2)
 
         prompt = f"""
-You are a Software Planning Agent for a PYTHON project (standard library first;
-only introduce a third-party package like flask, requests, or pytest if the
-requirement genuinely needs it -- e.g. a web app needs flask, a GUI needs
-tkinter which is stdlib).
+You are a Software Planning Agent for a JAVA SPRING BOOT project, built with Maven.
+The generated project must ALWAYS be Java/Spring Boot -- never Python, Flask, or any
+other language/stack, regardless of how the requirement is phrased.
 
 Given the analyzed requirement below, produce a concrete implementation plan.
 
@@ -43,22 +42,35 @@ Respond with ONLY a valid JSON object matching this exact schema (no markdown, n
 {schema_hint}
 
 Produce:
-1. modules: high-level Python modules/files needed (e.g. "model", "service", "ui", "cli")
-2. entities: each domain concept with its fields (name: type) -- can be an empty list if
-   the project has no real data model (e.g. a simple CLI tool)
-3. endpoints: only fill this in if the project is a web API/app (method, path, description).
-   For a desktop, CLI, or script project, return an empty list -- do NOT invent a REST API
-   for something that isn't one.
+1. modules: high-level Spring Boot layers/packages needed, using these exact names where
+   applicable: "pom", "entity", "repository", "service", "controller", "dto", "config",
+   "exception". Always include "pom" as a module.
+2. entities: each domain concept with its fields as "name: JavaType" (e.g. "id: Long",
+   "name: String", "email: String") -- use proper Java types (Long, String, Integer,
+   Boolean, LocalDate, etc.), not Python types.
+3. endpoints: REST endpoints (method, path, description) following Spring MVC conventions
+   (e.g. GET /api/students, POST /api/students). Almost every Spring Boot project should
+   have at least basic CRUD endpoints unless it's explicitly not a web API.
 4. tasks: ordered, atomic development tasks with unique task_id and depends_on referencing
-   earlier task_ids. One task should always be "Write unit tests" using pytest, depending on
-   the core logic tasks.
-5. tech_notes: relevant Python decisions (max 6 short notes, one line each) -- state explicitly
-   whether this is a CLI app, a tkinter desktop app, or a flask web app, and which third-party
-   packages (if any) are required.
+   earlier task_ids. MUST include, in dependency order:
+   - one task to generate "pom.xml" (Maven build file) with spring-boot-starter-web,
+     spring-boot-starter-data-jpa, spring-boot-starter-validation, an H2 or MySQL driver,
+     and spring-boot-starter-test as dependencies
+   - one task to generate "src/main/resources/application.properties"
+   - one task per Entity class (JPA @Entity)
+   - one task per Repository interface (extends JpaRepository)
+   - one task per Service class
+   - one task per REST Controller (@RestController)
+   - one final task "Write JUnit tests" (JUnit 5 + Mockito), depending on the
+     service/controller tasks
+5. tech_notes: relevant Spring Boot decisions (max 6 short notes, one line each) -- state
+   the Spring Boot version assumption (e.g. "Spring Boot 3.x, Java 17+"), the build tool
+   ("Maven"), the database ("H2 in-memory for dev" or as specified), and any other
+   third-party dependencies required (e.g. JWT library, Lombok).
 
 Rules:
-- Default to plain Python standard library. Only add a dependency if the requirement can't
-  reasonably be met without it.
+- The output is ALWAYS Java/Spring Boot. Do not produce Python modules, Flask routes,
+  requirements.txt, or any non-Java tooling under any circumstances.
 - Keep entities and endpoints consistent with each other.
 - Tasks must be atomic (one file/concern per task) and ordered so dependencies come first.
 - Do not invent requirements not implied by the input.
@@ -73,7 +85,7 @@ Rules:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are an expert Python software architect and technical planner. Always respond with valid, complete JSON only."},
+                        {"role": "system", "content": "You are an expert Java Spring Boot software architect and technical planner. Always respond with valid, complete JSON only. You never plan Python or Flask output."},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"}

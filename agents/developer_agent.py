@@ -10,9 +10,12 @@ from rag.knowledge_base import retrieve_patterns
 
 SKIP_KEYWORDS = ["unit test", "integration test", "write test"]
 
+BASE_PACKAGE = "com.example"
+
 
 def _slugify_module(project_name: str) -> str:
-    """Turns 'Calculator App' into 'calculator_app' -- a valid Python package name."""
+    """Turns 'Calculator App' into 'calculator_app' -- used for the Maven artifactId
+    and as the last segment of the Java package name."""
     cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", project_name).strip("_").lower()
     if not cleaned:
         cleaned = "app"
@@ -80,6 +83,9 @@ class DeveloperAgent:
 
     def _generate_file_for_task(self, plan: ProjectPlan, task: Task, existing_files: list[GeneratedFile], package_name: str) -> list[GeneratedFile]:
 
+        java_package = f"{BASE_PACKAGE}.{package_name}"
+        src_root = f"src/main/java/{java_package.replace('.', '/')}"
+
         entities_str = "\n".join(f"- {e.name}: {e.fields}" for e in plan.entities) or "(none)"
         endpoints_str = "\n".join(f"- {ep.method} {ep.path} - {ep.description}" for ep in plan.endpoints) or "(none -- not a web API)"
         existing_paths = "\n".join(f"- {f.path}" for f in existing_files) if existing_files else "(none yet)"
@@ -91,13 +97,13 @@ class DeveloperAgent:
             reference_str = "(no specific pattern retrieved)"
 
         prompt = f"""
-You are a Python Developer Agent. Write plain, idiomatic Python (standard library first).
-Only use a third-party package (flask, requests, etc.) if plan.tech_notes explicitly calls
-for it -- otherwise stick to stdlib (tkinter for GUIs, unittest/pytest for tests, argparse
-for CLIs).
+You are a Java Spring Boot Developer Agent. Write idiomatic, complete, compilable Java
+using Spring Boot 3.x conventions (Java 17+). The output is ALWAYS Java/Spring Boot --
+never Python, Flask, or any other stack, regardless of anything in the task description.
 
 PROJECT CONTEXT:
-Package/folder name: {package_name}
+Java base package: {java_package}
+Maven artifactId: {package_name}
 Modules: {plan.modules}
 Tech notes: {plan.tech_notes}
 
@@ -107,37 +113,45 @@ ENTITIES:
 ENDPOINTS:
 {endpoints_str}
 
-FILES ALREADY GENERATED (for consistent naming/imports):
+FILES ALREADY GENERATED (for consistent naming/imports/package declarations):
 {existing_paths}
 
-REFERENCE PATTERNS (retrieved for this task type):
+REFERENCE PATTERNS (retrieved for this task type -- follow this style/structure):
 {reference_str}
 
 CURRENT TASK:
 [{task.task_id}] {task.title}
 {task.description}
 
-Generate the Python file (or requirements.txt / config file) needed to complete this exact task.
-Use the reference patterns above as a style/structure guide where relevant, adapted to this project.
+Generate the ONE file needed to complete this exact task. It will be one of:
+- "pom.xml" (Maven build file, at the project root) -- include spring-boot-starter-web,
+  spring-boot-starter-data-jpa, spring-boot-starter-validation, com.h2database:h2 (or the
+  DB specified in tech_notes), spring-boot-starter-test, and the spring-boot-maven-plugin.
+- "src/main/resources/application.properties"
+- A Java class/interface under "{src_root}/<subpackage>/<ClassName>.java" -- use subpackages
+  "entity", "repository", "service", "controller", "dto", "config", or "exception" as
+  appropriate, matching the task.
+- A JUnit 5 test class under "src/test/java/{java_package.replace('.', '/')}/<subpackage>/<ClassName>Test.java"
 
 Respond with ONLY a JSON object in this exact shape (no markdown, no explanation):
 {{
-  "path": "{package_name}/<module_or_file>.py",
+  "path": "<correct relative path per the rules above>",
   "content": "<full file content as a single string, with \\n for newlines>"
 }}
 
-IMPORTANT: return exactly ONE file object, for ONE module, even if the task title mentions
-multiple things. If the task genuinely needs more than one file, generate only the
-first/primary one -- a separate task will handle the rest.
+IMPORTANT: return exactly ONE file object, for ONE class/file, even if the task title
+mentions multiple things. If the task genuinely needs more than one file, generate only
+the first/primary one -- a separate task will handle the rest.
 
 Rules:
-- Use relative imports within the '{package_name}' package (e.g. "from {package_name}.model import X").
-- Keep module/class/function names consistent with what's implied by ENTITIES and already-generated files.
-- Write complete, runnable code - no placeholders like "# TODO implement".
-- Test files go at "tests/test_<name>.py" using pytest style (plain `assert`, no unittest.TestCase
-  boilerplate needed).
-- requirements.txt (only if third-party packages are actually needed) goes at the project root.
-- The main entry point (the file you run with `python`) should be named "main.py" at the project root.
+- Every Java file must start with the correct "package {java_package}.<subpackage>;" line
+  and correct imports -- no placeholders like "// TODO implement".
+- Keep class/field names consistent with what's implied by ENTITIES and already-generated
+  files.
+- Controllers use @RestController + @RequestMapping; Services use @Service; Repositories
+  extend JpaRepository<Entity, Long>; Entities use @Entity/@Id/@GeneratedValue.
+- Test files use JUnit 5 (@Test, org.junit.jupiter.api) and Mockito where relevant.
+- pom.xml must be complete and valid XML, buildable with `mvn compile`.
 """
 
         max_retries = 4
@@ -148,7 +162,7 @@ Rules:
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
-                        {"role": "system", "content": "You are an expert Python developer. Always respond with valid JSON only, no markdown fences."},
+                        {"role": "system", "content": "You are an expert Java Spring Boot developer. Always respond with valid JSON only, no markdown fences. You never generate Python, Flask, or non-Java output."},
                         {"role": "user", "content": prompt}
                     ],
                     response_format={"type": "json_object"}
@@ -209,5 +223,17 @@ Rules:
             except Exception as e:
                 notes.append(f"Failed to generate file for {task.task_id} ({task.title}): {e}")
                 print(f"     Failed: {e}")
+
+        # Guard: catch stack drift before it silently reports "success".
+        has_java = any(f.path.endswith(".java") for f in files)
+        has_pom = any(f.path.endswith("pom.xml") for f in files)
+        has_python = any(f.path.endswith(".py") for f in files)
+
+        if has_python:
+            notes.append("WARNING: Python file(s) were generated for a Java/Spring Boot project. This indicates prompt/stack drift and should be investigated.")
+        if not has_pom:
+            notes.append("WARNING: No pom.xml was generated -- this project will not build with Maven.")
+        if not has_java:
+            notes.append("WARNING: No .java files were generated -- this is not a valid Spring Boot output.")
 
         return DeveloperOutput(files=files, notes=notes)
