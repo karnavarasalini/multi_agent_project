@@ -1,0 +1,1 @@
+spring:\n  datasource:\n    url: jdbc:h2:mem:hotelbookingdb\n    driver-class-name: org.h2.Driver\n    username: sa\n    password: ''\n  jpa:\n    hibernate:\n      ddl-auto: update\n    show-sql: true\n  security:\n    jwt:\n      secret: YourSuperSecretKeyChangeMe\nstripe:\n  secret-key: STRIPE_SECRET_REMOVED\n  public-key: pk_test_XXXXXXXXXXXXXXXXXXXXXXXX
