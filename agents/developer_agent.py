@@ -148,6 +148,8 @@ Rules:
   and correct imports -- no placeholders like "// TODO implement".
 - Keep class/field names consistent with what's implied by ENTITIES and already-generated
   files.
+  - Every Maven dependency MUST include an explicit <version> tag - never omit it.
+- Prefer the H2 in-memory database (already usable for this project) instead of adding external database drivers like MySQL/PostgreSQL, unless the requirement explicitly demands production persistence. H2 avoids setup complexity and is ideal for a demo.
 - Controllers use @RestController + @RequestMapping; Services use @Service; Repositories
   extend JpaRepository<Entity, Long>; Entities use @Entity/@Id/@GeneratedValue.
 - Test files use JUnit 5 (@Test, org.junit.jupiter.api) and Mockito where relevant.

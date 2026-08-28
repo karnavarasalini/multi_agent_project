@@ -2,6 +2,8 @@ import os
 import re
 import subprocess
 
+from sympy import true
+
 from models.schemas import TestResult
 
 
@@ -21,6 +23,7 @@ class TesterAgent:
             capture_output=True,
             text=True,
             timeout=timeout,
+            shell=true,
         )
 
     def _compile_check(self, project_dir: str) -> subprocess.CompletedProcess:

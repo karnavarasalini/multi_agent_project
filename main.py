@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv() # type: ignore
 
 from requirement_input import get_requirement
 from agents.requirement_agent import RequirementAgent
