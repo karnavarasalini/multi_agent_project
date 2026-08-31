@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Celene — AI Code Assistant</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #eae6ff;
+    overflow-x: hidden;
+    background: radial-gradient(ellipse at 20% 20%, #2d1b5e 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 0%, #4a1e6b 0%, transparent 55%),
+                radial-gradient(ellipse at 50% 80%, #1a0f3d 0%, transparent 60%),
+                linear-gradient(180deg, #0b0620 0%, #1a0f3d 40%, #2b1454 70%, #180a35 100%);
+    position: relative;
+  }
+
+  /* Stars */
+  .stars, .stars2, .stars3 {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    background-repeat: repeat;
+    z-index: 0;
+  }
+  .stars {
+    background-image: radial-gradient(1.5px 1.5px at 20px 30px, #fff, transparent),
+      radial-gradient(1px 1px at 90px 120px, #fff, transparent),
+      radial-gradient(2px 2px at 160px 60px, #d9c9ff, transparent),
+      radial-gradient(1px 1px at 220px 180px, #fff, transparent),
+      radial-gradient(1.5px 1.5px at 300px 40px, #fff, transparent);
+    background-size: 350px 250px;
+    animation: drift 90s linear infinite;
+    opacity: 0.8;
+  }
+  .stars2 {
+    background-image: radial-gradient(1px 1px at 50px 90px, #b799ff, transparent),
+      radial-gradient(1.5px 1.5px at 140px 20px, #fff, transparent),
+      radial-gradient(1px 1px at 260px 150px, #fff, transparent);
+    background-size: 400px 300px;
+    animation: drift 150s linear infinite reverse;
+    opacity: 0.5;
+  }
+  @keyframes drift {
+    from { transform: translateY(0); }
+    to { transform: translateY(-1000px); }
+  }
+
+  .glow {
+    position: fixed;
+    width: 500px; height: 500px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(155,89,255,0.35) 0%, transparent 70%);
+    top: -150px; right: -100px;
+    filter: blur(40px);
+    z-index: 0;
+  }
+
+  .wrap {
+    position: relative;
+    z-index: 1;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 50px 24px 80px;
+  }
+
+  header {
+    text-align: center;
+    margin-bottom: 36px;
+  }
+  header h1 {
+    font-size: 2.6rem;
+    background: linear-gradient(90deg, #c9a4ff, #7fd9ff, #c9a4ff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    letter-spacing: 1px;
+  }
+  header p {
+    color: #b7a9e6;
+    margin-top: 8px;
+    font-size: 0.95rem;
+  }
+
+  .card {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(180,140,255,0.25);
+    border-radius: 18px;
+    padding: 26px;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 0 40px rgba(120,60,220,0.15);
+    margin-bottom: 24px;
+  }
+
+  label {
+    display: block;
+    font-size: 0.85rem;
+    color: #c9bdf0;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 130px;
+    background: rgba(10,5,30,0.5);
+    border: 1px solid rgba(180,140,255,0.3);
+    border-radius: 12px;
+    padding: 14px;
+    color: #f1ecff;
+    font-size: 0.95rem;
+    resize: vertical;
+    outline: none;
+    transition: border 0.2s;
+  }
+  textarea:focus { border-color: #a97bff; }
+
+  select {
+    width: 100%;
+    background: rgba(10,5,30,0.5);
+    border: 1px solid rgba(180,140,255,0.3);
+    border-radius: 12px;
+    padding: 12px;
+    color: #f1ecff;
+    outline: none;
+  }
+
+  .row { display: flex; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 200px; }
+
+  button {
+    margin-top: 20px;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #10061f;
+    background: linear-gradient(90deg, #c9a4ff, #8fd8ff);
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(160,110,255,0.4); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .status {
+    font-size: 0.85rem;
+    color: #a992e0;
+    margin-top: 10px;
+    min-height: 18px;
+  }
+
+  pre {
+    background: rgba(5,2,18,0.6);
+    border: 1px solid rgba(180,140,255,0.2);
+    border-radius: 12px;
+    padding: 18px;
+    max-height: 420px;
+    overflow: auto;
+    font-size: 0.85rem;
+    color: #d7f7ff;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .actions { display: flex; gap: 12px; margin-top: 14px; }
+  .actions button { margin-top: 0; }
+  .secondary {
+    background: transparent !important;
+    color: #c9a4ff !important;
+    border: 1px solid rgba(180,140,255,0.4);
+  }
+
+  footer {
+    text-align: center;
+    color: #7a6aa8;
+    font-size: 0.78rem;
+    margin-top: 40px;
+  }
+</style>
+</head>
+<body>
+
+<div class="stars"></div>
+<div class="stars2"></div>
+<div class="glow"></div>
+
+<div class="wrap">
+  <header>
+    <h1>✨ Celene</h1>
+    <p>Your AI code assistant — describe what you need, get a file back.</p>
+  </header>
+
+  <div class="card">
+    <label for="prompt">Your Request</label>
+    <textarea id="prompt" placeholder="e.g. Generate a Java Spring Boot REST API for managing books with CRUD endpoints..."></textarea>
+
+    <div class="row">
+      <div>
+        <label for="endpoint">Backend Endpoint</label>
+        <input id="endpoint" type="text" value="http://localhost:8000/generate"
+          style="width:100%; background: rgba(10,5,30,0.5); border: 1px solid rgba(180,140,255,0.3); border-radius: 12px; padding: 12px; color:#f1ecff; outline:none;">
+      </div>
+      <div>
+        <label for="filename">Output Filename</label>
+        <input id="filename" type="text" value="output.java"
+          style="width:100%; background: rgba(10,5,30,0.5); border: 1px solid rgba(180,140,255,0.3); border-radius: 12px; padding: 12px; color:#f1ecff; outline:none;">
+      </div>
+    </div>
+
+    <button id="runBtn" onclick="askCelene()">Ask Celene</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card" id="outputCard" style="display:none;">
+    <label>Celene's Output</label>
+    <pre id="output"></pre>
+    <div class="actions">
+      <button onclick="downloadOutput()">⬇ Download File</button>
+      <button class="secondary" onclick="copyOutput()">Copy to Clipboard</button>
+    </div>
+  </div>
+
+  <footer>Celene runs locally · connect the endpoint above to your own backend</footer>
+</div>
+
+<script>
+let lastOutput = "";
+
+async function askCelene() {
+  const prompt = document.getElementById('prompt').value.trim();
+  const endpoint = document.getElementById('endpoint').value.trim();
+  const status = document.getElementById('status');
+  const btn = document.getElementById('runBtn');
+  const outputCard = document.getElementById('outputCard');
+  const output = document.getElementById('output');
+
+  if (!prompt) {
+    status.textContent = "⚠ Please enter a request first.";
+    return;
+  }
+
+  btn.disabled = true;
+  status.textContent = "Celene is thinking...";
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+
+    const data = await res.json();
+    // Accept either { result: "..." } or { output: "..." } or raw text
+    lastOutput = data.result || data.output || data.code || JSON.stringify(data, null, 2);
+
+    output.textContent = lastOutput;
+    outputCard.style.display = "block";
+    status.textContent = "✔ Done.";
+  } catch (err) {
+    status.textContent = "✖ Couldn't reach backend (" + err.message + "). Make sure your local server is running at the endpoint above.";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function downloadOutput() {
+  if (!lastOutput) return;
+  const filename = document.getElementById('filename').value.trim() || "output.txt";
+  const blob = new Blob([lastOutput], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function copyOutput() {
+  if (!lastOutput) return;
+  navigator.clipboard.writeText(lastOutput);
+  document.getElementById('status').textContent = "✔ Copied to clipboard.";
+}
+</script>
+
+</body>
+</html>

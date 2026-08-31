@@ -1,0 +1,25 @@
+# Python dependencies for the multi-agent Spring Boot generator.
+#
+# Requires Python 3.10+ (the agents use PEP 604 `X | None` annotations, which
+# raise TypeError on 3.9).
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements.txt
+#
+# Also required, outside of pip:
+#   - JDK 17+ and Apache Maven on PATH (TesterAgent shells out to `mvn`)
+#   - GROQ_API_KEY in .env (see main.py / the agent constructors)
+
+# LLM client. Pointed at Groq's OpenAI-compatible endpoint by the agents.
+openai==2.9.0
+
+# Structured agent inputs/outputs (models/schemas.py).
+pydantic==2.13.4
+
+# Loads GROQ_API_KEY from .env (main.py).
+python-dotenv==1.2.3
+
+# RAG pattern retrieval over the Spring Boot knowledge base (rag/knowledge_base.py).
+sentence-transformers==5.1.2
+faiss-cpu==1.13.0
+numpy==2.3.5
