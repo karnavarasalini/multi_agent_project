@@ -5,6 +5,9 @@ import time
 
 from models.schemas import CodeFix, DebugResult, ProjectState
 from openai import OpenAI, RateLimitError
+from rag.knowledge_base import retrieve_known_fix, add_fix_as_pattern
+from pathlib import Path
+from datetime import datetime
 
 client = OpenAI(
     api_key=os.getenv("GROQ_API_KEY"),
@@ -457,9 +460,84 @@ def _find_source_file_for_test_error(error_summary: str, project_state: ProjectS
             return gf.path
     return None
 
+# In debugger_agent.py's run_debugger_agent(), after getting a fix:
+
+def flag_for_human_review(fix: CodeFix, file_path: str):
+    Path("review_needed").mkdir(exist_ok=True)
+
+    review_note = {
+        "file": file_path,
+        "proposed_fix": fix.updated_content,
+        "root_cause": getattr(fix, "root_cause", ""),
+        "confidence": getattr(fix, "confidence", ""),
+        "explanation": getattr(fix, "explanation", ""),
+        "flagged_at": datetime.now().isoformat()
+    }
+
+    fname = f"review_needed/{Path(file_path).stem}_{int(time.time())}.json"
+
+    with open(fname, "w", encoding="utf-8") as f:
+        json.dump(review_note, f, indent=2)
+
+    print(
+        f"[Debugger] LOW CONFIDENCE — flagged for review, "
+        f"NOT applied: {file_path}"
+    )
+
+
+def apply_fix_with_confidence_check(
+    fix: CodeFix,
+    file_path: str,
+    project_root: str,
+    project_state: ProjectState,
+) -> bool:
+
+    confidence = getattr(fix, "confidence", "low").lower()
+
+    if confidence == "low":
+        flag_for_human_review(fix, file_path)
+        return False
+
+    _write_and_register(
+        fix.file_path,
+        fix.updated_content,
+        project_root,
+        project_state,
+    )
+
+    return True
 
 def fix_file(file_path: str, error_text: str, project_root: str, project_state: ProjectState) -> CodeFix | None:
+
+    known = retrieve_known_fix(error_text)
+
+    if known:
+        print(
+            f"[Debugger] Reusing learned fix "
+            f"(reused {known['times_reused']} times, "
+            f"sim={known['similarity']:.2f})"
+        )
+
+        fix = CodeFix(
+            file_path=file_path,
+            updated_content=known["fixed_code"],
+            root_cause=known["root_cause"],
+            explanation="Reused from self-improving RAG cache",
+            confidence="high",
+        )
+
+        if apply_fix_with_confidence_check(
+            fix,
+            file_path,
+            project_root,
+            project_state,
+        ):
+            return fix
+
+        return None
+
     resolved_path = _resolve_path(file_path, project_root)
+    
 
     if not os.path.exists(resolved_path):
         return None
@@ -500,19 +578,22 @@ a generic type to Object to silence an error."""
 
     fixed_content = _strip_code_fence(fixed_content)
 
-    with open(resolved_path, "w", encoding="utf-8") as f:
-        f.write(fixed_content)
-
-    for gf in project_state.developer_output.files:
-        if gf.path == file_path:
-            gf.content = fixed_content
-            break
-
-    return CodeFix(
+    fix = CodeFix(
         file_path=file_path,
         updated_content=fixed_content,
-        explanation=f"Fixed: {error_text[:200]}"
+        explanation=f"Fixed: {error_text[:200]}",
+        confidence="high",
     )
+
+    if not apply_fix_with_confidence_check(
+        fix,
+        file_path,
+        project_root,
+        project_state,
+    ):
+        return None
+
+    return fix
 
 
 def run_debugger_agent(project_state: ProjectState) -> ProjectState:
@@ -601,6 +682,11 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
             fixes=fixes,
             confidence="medium" if compile_errors else "low",
         ))
+        # In debugger_agent.py's run_debugger_agent(), after getting a fix:
+
+
+    
+
     else:
         project_state.status = "failed"
 
