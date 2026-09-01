@@ -601,6 +601,18 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
     test_result = project_state.test_result
 
     if test_result is None or test_result.passed:
+        # Tests just passed -- if the previous debug pass produced fixes, they are now
+        # CONFIRMED to work. Save them to the learned-pattern cache so future runs can
+        # reuse them instantly instead of calling the LLM again.
+        if test_result is not None and test_result.passed and project_state.debug_history:
+            last_debug = project_state.debug_history[-1]
+            for fix in last_debug.fixes:
+                add_fix_as_pattern(
+                    error_message=last_debug.root_cause,
+                    root_cause=last_debug.root_cause,
+                    fixed_code=fix.updated_content,
+                    file_type=fix.file_path.split(".")[-1],
+                )
         return project_state
 
     compile_errors = parse_maven_errors(test_result.raw_output)
