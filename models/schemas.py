@@ -60,6 +60,8 @@ class CodeFix(BaseModel):
     file_path: str
     updated_content: str
     explanation: str
+    root_cause: Optional[str] = None
+    confidence: str = "high"
 
 
 class DebugResult(BaseModel):
@@ -77,6 +79,6 @@ class ProjectState(BaseModel):
     test_result: Optional[TestResult] = None
     debug_history: List[DebugResult] = Field(default_factory=list)
     iteration: int = 0
-    max_iterations: int = 3
+    max_iterations: int = 5
     status: str = "in_progress"   # "in_progress" | "success" | "failed"
     output_dir: str = "output/generated-project"

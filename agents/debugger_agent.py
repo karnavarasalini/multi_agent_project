@@ -15,12 +15,18 @@ client = OpenAI(
 )
 
 MODEL = "openai/gpt-oss-120b"
-MAVEN_COMPILE_ERROR_RE = re.compile(r"\[ERROR\]\s+(.+?\.java):\[(\d+),(\d+)\]")
+
+# FIXED: matches BOTH Maven-wrapped ([ERROR] /path/File.java:[12,4] message) and
+# plain javac (/path/File.java:9: message) output.
+MAVEN_COMPILE_ERROR_RE = re.compile(
+    r"(?:\[ERROR\]\s*)?([^\s:]+\.java):\[?(\d+)(?:,(\d+))?\]?"
+)
 FAILED_TEST_RE = re.compile(r"(\S+Test)[.#](\S+)")
 
-# NEW: matches "cannot find symbol / symbol: class X / location: package Y" blocks
+# FIXED: same format-agnostic fix -- matches "cannot find symbol / symbol: class X /
+# location: package Y" whether or not preceded by "[ERROR]"/"[line,col]" brackets.
 MISSING_CLASS_RE = re.compile(
-    r"\[ERROR\]\s+.+?\.java:\[\d+,\d+\]\s+cannot find symbol\s+"
+    r"(?:\[ERROR\]\s*)?\S+\.java:\[?\d+(?:,\d+)?\]?:?\s+cannot find symbol\s+"
     r"symbol:\s+class\s+(?P<symbol>\w+)\s+"
     r"location:\s+package\s+(?P<package>[\w.]+)",
     re.MULTILINE,
@@ -36,6 +42,30 @@ MISSING_MEMBER_RE = re.compile(
     r"cannot find symbol\s*\n\s*symbol:\s+(?:method|variable)\s+(?P<member>\w+)[^\n]*\n"
     r"\s*location:\s+(?:variable\s+\w+\s+of\s+type\s+|class\s+|interface\s+)(?P<type>[\w.$]+)",
 )
+
+# Matches a Java package declaration at the top of a file, e.g. "package com.example.app.entity;"
+PACKAGE_DECL_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
+
+# NEW: detects the "file is empty" marker TesterAgent emits when a .java file is
+# 0 bytes / whitespace-only on disk. An empty file is syntactically legal Java and
+# never appears as a javac diagnostic, so this needs its own line format and its
+# own repair path -- see fix_empty_file() below.
+EMPTY_FILE_RE = re.compile(r"\[ERROR\]\s+(\S+\.java):\s+file is empty")
+
+# NEW: detects the known Lombok/javac internal-compiler crash that happens when an
+# old Lombok release's patched javac hooks don't match a newer JDK's internals.
+# This is a pom.xml dependency-version problem, not a bug in any generated .java
+# file -- no per-file LLM edit can ever fix it, so it gets a deterministic fast path.
+LOMBOK_JAVAC_CRASH_RE = re.compile(
+    r"ExceptionInInitializerError.*?TypeTag\s*::\s*UNKNOWN|"
+    r"com\.sun\.tools\.javac\.code\.TypeTag\s*::\s*UNKNOWN",
+    re.DOTALL,
+)
+MIN_SAFE_LOMBOK_VERSION = "1.18.32"
+
+# Common layer-name suffixes generated projects use -- stripping the last one off a
+# file's package gives a good guess at the project's base package.
+_LAYER_NAMES = {"entity", "repository", "service", "controller", "model", "dto", "config", "exception"}
 
 RATE_LIMIT_FLAG = "__RATE_LIMIT_HIT__"
 
@@ -193,11 +223,13 @@ def call_llm_json(prompt: str, max_retries: int = 4) -> str:
 
 
 def parse_maven_errors(output: str) -> list[dict]:
-    """Parses javac-style Maven compile errors: '[ERROR] /path/File.java:[12,4] message'."""
+    """Parses javac-style compile errors in either Maven-wrapped
+    '[ERROR] /path/File.java:[12,4] message' form or plain javac
+    '/path/File.java:9: message' form (column group is optional and unused)."""
     errors = []
     for match in MAVEN_COMPILE_ERROR_RE.finditer(output):
-        file, line, col = match.groups()
-        errors.append({"file": file, "line": int(line)})
+        file_path, line, _col = match.groups()
+        errors.append({"file": file_path, "line": int(line)})
     return errors
 
 
@@ -208,7 +240,7 @@ def group_by_file(errors: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
-# ---------- NEW: missing-class detection & creation ----------
+# ---------- missing-class detection & creation ----------
 
 def parse_missing_classes(output: str) -> list[dict]:
     """Finds 'cannot find symbol: class X / location: package Y' blocks -- these mean
@@ -236,8 +268,8 @@ def _file_already_exists(symbol: str, project_state: ProjectState) -> bool:
 
 
 def _gather_reference_context(symbol: str, project_state: ProjectState, project_root: str, max_files: int = 3) -> str:
-    """Pulls in the content of any generated file that references the missing class,
-    so the LLM knows what fields/methods it needs to have."""
+    """Pulls in the content of any generated file that references the missing/empty
+    class, so the LLM knows what fields/methods it needs to have."""
     snippets = []
     for gf in project_state.developer_output.files:
         if symbol in (gf.content or ""):
@@ -289,7 +321,6 @@ Start with 'package {package};' and include all necessary imports."""
     with open(resolved_path, "w", encoding="utf-8") as f:
         f.write(generated)
 
-    # Register the new file in project state so later passes/tests see it
     existing_file_cls = type(project_state.developer_output.files[0]) if project_state.developer_output.files else None
     if existing_file_cls:
         new_file = existing_file_cls(path=relative_path, content=generated)
@@ -298,7 +329,216 @@ Start with 'package {package};' and include all necessary imports."""
     return CodeFix(
         file_path=relative_path,
         updated_content=generated,
-        explanation=f"Created missing class {symbol} in package {package} (was referenced but never generated)"
+        explanation=f"Created missing class {symbol} in package {package} (was referenced but never generated)",
+        confidence="high",
+    )
+
+
+# ---------- NEW: empty-file repair ----------
+
+def parse_empty_files(output: str) -> list[str]:
+    """Finds the '[ERROR] path.java: file is empty' lines TesterAgent emits."""
+    seen = []
+    for m in EMPTY_FILE_RE.finditer(output):
+        path = m.group(1)
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def _package_from_path(java_path: str) -> str | None:
+    normalized = java_path.replace("\\", "/")
+    m = re.search(r"src/(?:main|test)/java/(.+)/[^/]+\.java$", normalized)
+    return m.group(1).replace("/", ".") if m else None
+
+
+def _find_project_entries_by_basename(basename: str, project_state: ProjectState) -> list:
+    return [gf for gf in project_state.developer_output.files if os.path.basename(gf.path) == basename]
+
+
+def fix_empty_file(rel_path: str, project_root: str, project_state: ProjectState) -> CodeFix | None:
+    """Repairs a source file that's empty on disk. Root cause is almost always a
+    duplicate GeneratedFile entry for the same class (e.g. one relative path, one
+    absolute path resolving to the same file) where the empty entry got written
+    last and clobbered the real content -- so first check for a non-empty in-memory
+    duplicate and restore from it directly. Only fall back to LLM regeneration if no
+    such duplicate exists."""
+    basename = os.path.basename(rel_path)
+    entries = _find_project_entries_by_basename(basename, project_state)
+    project_path = next(
+        (e.path for e in entries if e.path.replace("\\", "/") == rel_path), rel_path
+    )
+
+    for gf in entries:
+        if (gf.content or "").strip():
+            _write_and_register(project_path, gf.content, project_root, project_state)
+            print(f"  Restored {project_path} from a non-empty duplicate GeneratedFile entry")
+            return CodeFix(
+                file_path=project_path,
+                updated_content=gf.content,
+                explanation=(
+                    f"Restored {project_path}, which was empty on disk -- a duplicate "
+                    f"GeneratedFile entry for the same class had overwritten it. "
+                    f"Recovered the real content from that duplicate."
+                ),
+                confidence="high",
+            )
+
+    # No usable in-memory duplicate -- regenerate from scratch via LLM.
+    class_name = basename.removesuffix(".java")
+    package = _package_from_path(project_path)
+    if not package:
+        print(f"  Could not determine package for empty file {rel_path} -- skipping regeneration.")
+        return None
+
+    context = _gather_reference_context(class_name, project_state, project_root)
+    prompt = f"""A Java file in a Spring Boot project is EMPTY (0 bytes) on disk and needs to be
+regenerated from scratch. Other files in the project reference this class.
+
+{_plan_context(project_state)}
+
+CLASS NAME: {class_name}
+PACKAGE: {package}
+
+Files that reference this class (infer required fields/methods/annotations from usage):
+
+{context if context else "(no referencing files found -- infer a reasonable implementation from the class name and ENDPOINTS/ENTITIES above)"}
+
+Return the COMPLETE Java file content only, no explanation, no markdown fences.
+Start with 'package {package};' and include all necessary imports."""
+
+    generated = call_llm(prompt)
+    if generated.startswith(RATE_LIMIT_FLAG):
+        raise RateLimitStop(f"Daily/rate token limit hit while regenerating empty file '{rel_path}'. Details: {generated}")
+    if generated.startswith("__LLM_CALL_FAILED__"):
+        return None
+
+    generated = _strip_code_fence(generated)
+    _write_and_register(project_path, generated, project_root, project_state)
+    print(f"  Regenerated empty file {project_path} from context")
+
+    return CodeFix(
+        file_path=project_path,
+        updated_content=generated,
+        explanation=f"Regenerated {project_path}, which was empty on disk, from other files that reference {class_name}.",
+        confidence="medium",
+    )
+
+
+# ---------- NEW: Lombok/javac internal-compiler crash repair ----------
+
+def fix_lombok_javac_crash(project_state: ProjectState, project_root: str) -> CodeFix | None:
+    """Deterministically bumps <lombok.version> in pom.xml when the build crashed
+    with the known Lombok/javac internal-compiler incompatibility. No LLM call
+    needed -- this is a fixed, known remedy, not a code-comprehension problem, and
+    no per-file edit could ever fix a pom.xml dependency-version mismatch."""
+    pom_path = None
+    for gf in project_state.developer_output.files:
+        if os.path.basename(gf.path) == "pom.xml":
+            pom_path = gf.path
+            break
+    if not pom_path:
+        return None
+
+    content = _read_generated(pom_path, project_state, project_root)
+    match = re.search(r"<lombok\.version>([^<]+)</lombok\.version>", content)
+    if not match:
+        return None
+
+    current_version = match.group(1)
+    if current_version == MIN_SAFE_LOMBOK_VERSION:
+        return None  # already at the safe version -- crash has a different cause
+
+    new_content = content.replace(
+        f"<lombok.version>{current_version}</lombok.version>",
+        f"<lombok.version>{MIN_SAFE_LOMBOK_VERSION}</lombok.version>",
+    )
+    _write_and_register(pom_path, new_content, project_root, project_state)
+    print(f"  Bumped Lombok {current_version} -> {MIN_SAFE_LOMBOK_VERSION} (javac/Lombok internal incompatibility)")
+
+    return CodeFix(
+        file_path=pom_path,
+        updated_content=new_content,
+        explanation=(
+            f"Bumped lombok.version from {current_version} to {MIN_SAFE_LOMBOK_VERSION} -- "
+            f"build was crashing with 'ExceptionInInitializerError: "
+            f"com.sun.tools.javac.code.TypeTag :: UNKNOWN', a known Lombok/JDK javac "
+            f"internals incompatibility unrelated to any generated source file."
+        ),
+        confidence="high",
+    )
+
+
+# ---------- missing @SpringBootApplication entry point ----------
+
+def _has_main_application_class(project_state: ProjectState) -> bool:
+    """True if any generated file is already annotated @SpringBootApplication."""
+    return any("@SpringBootApplication" in (gf.content or "") for gf in project_state.developer_output.files)
+
+
+def _guess_base_package(project_state: ProjectState) -> str | None:
+    """Infers the project's base package by taking any generated file's package
+    declaration and stripping a trailing layer name like .entity / .controller /
+    .service, etc."""
+    for gf in project_state.developer_output.files:
+        m = PACKAGE_DECL_RE.search(gf.content or "")
+        if not m:
+            continue
+        pkg = m.group(1)
+        parts = pkg.split(".")
+        if parts and parts[-1] in _LAYER_NAMES:
+            return ".".join(parts[:-1])
+    return None
+
+
+def _application_class_name(base_package: str) -> str:
+    last_segment = base_package.rsplit(".", 1)[-1]
+    words = re.split(r"[_\-]+", last_segment)
+    return "".join(w.capitalize() for w in words if w) + "Application"
+
+
+def ensure_main_application_class(project_state: ProjectState, project_root: str) -> CodeFix | None:
+    """Guarantees the generated project has a runnable @SpringBootApplication entry
+    point. Mockito-based unit tests don't need a real Spring context, so `mvn test`
+    can report success even when the project has no main class at all -- this check
+    runs independently of test pass/fail so a missing entry point is always caught
+    and fixed, not just silently shipped."""
+    if _has_main_application_class(project_state):
+        return None
+
+    base_package = _guess_base_package(project_state)
+    if not base_package:
+        print("  Could not infer base package -- skipping main-class check.")
+        return None
+
+    class_name = _application_class_name(base_package)
+    relative_path = os.path.join("src", "main", "java", *base_package.split("."), f"{class_name}.java")
+
+    content = f"""package {base_package};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class {class_name} {{
+
+    public static void main(String[] args) {{
+        SpringApplication.run({class_name}.class, args);
+    }}
+}}
+"""
+
+    _write_and_register(relative_path, content, project_root, project_state)
+    print(f"  Created missing Spring Boot entry point: {relative_path}")
+
+    return CodeFix(
+        file_path=relative_path,
+        updated_content=content,
+        explanation=(
+            f"Created missing @SpringBootApplication main class ({class_name}) -- the generated "
+            f"project had no runnable entry point, which unit tests alone don't catch."
+        ),
+        confidence="high",
     )
 
 
@@ -374,6 +614,13 @@ compile. Critical guidance:
   "List<Object> cannot be converted to List<Book>", the real bug is the repository
   declaring JpaRepository<Object, Long> instead of JpaRepository<Book, Long>.
 - Repositories MUST be JpaRepository<ConcreteEntity, IdType> -- never Object.
+- If the compile error is INSIDE a file under src/test/java, the test is almost always
+  wrong, not the production code -- update the TEST to match the current production
+  method signatures and return types. Only change a src/main/java file's public method
+  signature (return type, parameter types) if it is genuinely incorrect per ENTITIES/
+  ENDPOINTS above. Never change a production method's signature back and forth between
+  iterations -- once a signature is correct, keep it stable and fix callers/tests
+  instead.
 - If a getter/setter is missing, ADD it to the entity using the field list in ENTITIES
   above. Never delete or rename an entity field to silence an error, and never invent a
   field that is not in ENTITIES.
@@ -418,7 +665,6 @@ Include ONLY files whose content actually changes. If a file is already correct,
         if not path or content is None:
             continue
 
-        # Only accept paths inside the project's source tree.
         normalized = os.path.normpath(path)
         if normalized.startswith("..") or os.path.isabs(normalized):
             print(f"  Skipping suspicious path from LLM: {path}")
@@ -436,6 +682,7 @@ Include ONLY files whose content actually changes. If a file is already correct,
             file_path=normalized,
             updated_content=content,
             explanation=f"{verb} during project-wide repair. Root cause: {root_cause}",
+            confidence="high",
         ))
 
     return fixes or None
@@ -460,7 +707,6 @@ def _find_source_file_for_test_error(error_summary: str, project_state: ProjectS
             return gf.path
     return None
 
-# In debugger_agent.py's run_debugger_agent(), after getting a fix:
 
 def flag_for_human_review(fix: CodeFix, file_path: str):
     Path("review_needed").mkdir(exist_ok=True)
@@ -507,6 +753,7 @@ def apply_fix_with_confidence_check(
 
     return True
 
+
 def fix_file(file_path: str, error_text: str, project_root: str, project_state: ProjectState) -> CodeFix | None:
 
     known = retrieve_known_fix(error_text)
@@ -537,7 +784,6 @@ def fix_file(file_path: str, error_text: str, project_root: str, project_state: 
         return None
 
     resolved_path = _resolve_path(file_path, project_root)
-    
 
     if not os.path.exists(resolved_path):
         return None
@@ -600,6 +846,32 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
     project_root = project_state.output_dir
     test_result = project_state.test_result
 
+    # Always check for a missing Spring Boot entry point, regardless of whether
+    # tests passed. Mockito-based unit tests don't spin up a real Spring context, so
+    # `mvn test` can report success even when the project has no @SpringBootApplication
+    # class at all. This runs unconditionally, before the early-return below.
+    main_class_fix = ensure_main_application_class(project_state, project_root)
+    if main_class_fix:
+        project_state.debug_history.append(DebugResult(
+            root_cause=main_class_fix.explanation,
+            fixes=[main_class_fix],
+            confidence="high",
+        ))
+
+    # NEW: fast-path for the Lombok/javac internal-compiler crash. This has no
+    # per-file error location at all, so none of the file-based checks below could
+    # ever catch it -- it must be checked before anything that assumes the failure
+    # is attributable to a specific source file.
+    if test_result is not None and not test_result.passed and LOMBOK_JAVAC_CRASH_RE.search(test_result.raw_output):
+        lombok_fix = fix_lombok_javac_crash(project_state, project_root)
+        if lombok_fix:
+            project_state.debug_history.append(DebugResult(
+                root_cause=lombok_fix.explanation,
+                fixes=[lombok_fix],
+                confidence="high",
+            ))
+            return project_state
+
     if test_result is None or test_result.passed:
         # Tests just passed -- if the previous debug pass produced fixes, they are now
         # CONFIRMED to work. Save them to the learned-pattern cache so future runs can
@@ -620,6 +892,15 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
     fixes = []
 
     try:
+        # STEP 0: repair any file that's empty on disk -- this can never show up as a
+        # compile error (an empty .java file is syntactically legal), so it has to be
+        # handled before anything else that assumes javac reported something.
+        empty_files = parse_empty_files(test_result.raw_output)
+        for rel_path in empty_files:
+            fix = fix_empty_file(rel_path, project_root, project_state)
+            if fix:
+                fixes.append(fix)
+
         # STEP 1: create any missing classes first -- this resolves the root cause
         # that would otherwise make every other fix attempt pointless.
         created_symbols = set()
@@ -648,8 +929,6 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
                 missing_members = parse_missing_members(test_result.raw_output)
                 targets = list(grouped.keys())
 
-                # A missing getter/setter is a defect in the DECLARING type, so queue
-                # that file first -- patching only the caller can never resolve it.
                 for mm in missing_members:
                     declaring = _find_generated_path_for_class(mm["type"], project_state)
                     if declaring and declaring not in targets:
@@ -669,7 +948,7 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
                 f"{len(compile_errors)} error location(s) across {len(grouped)} file(s); {strategy}"
                 + (f"; created missing class(es): {', '.join(created_symbols)}" if created_symbols else "")
             )
-        elif not missing_classes:
+        elif not missing_classes and not empty_files:
             target_path = _find_source_file_for_test_error(test_result.error_summary, project_state)
             if target_path:
                 fix = fix_file(target_path, test_result.error_summary or "Test failed.", project_root, project_state)
@@ -677,7 +956,10 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
                     fixes.append(fix)
             root_cause = test_result.error_summary or "Test failure with no identifiable source file."
         else:
-            root_cause = f"created missing class(es): {', '.join(created_symbols)}"
+            root_cause = (
+                (f"created missing class(es): {', '.join(created_symbols)}" if created_symbols else "")
+                or (f"repaired empty file(s): {', '.join(empty_files)}" if empty_files else "no actionable errors found")
+            )
     except RateLimitStop as e:
         project_state.status = "failed"
         project_state.debug_history.append(DebugResult(
@@ -694,11 +976,6 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
             fixes=fixes,
             confidence="medium" if compile_errors else "low",
         ))
-        # In debugger_agent.py's run_debugger_agent(), after getting a fix:
-
-
-    
-
     else:
         project_state.status = "failed"
 

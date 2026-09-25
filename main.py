@@ -86,7 +86,7 @@ print(f"\nProject written to: {project_root}")
 
 # ---------- Tester + Debugger ----------
 tester = TesterAgent()
-state.test_result = tester.test(state.output_dir)
+state.test_result = tester.test(state.output_dir, state.plan)
 print(f"\n[DEBUG] After first test: passed={state.test_result.passed}, status={state.status}")
 
 while not state.test_result.passed and state.status != "failed":
@@ -101,7 +101,7 @@ while not state.test_result.passed and state.status != "failed":
     print(f"[DEBUG] After debugger: status={state.status}, debug_history_len={len(state.debug_history)}")
 
     state.iteration += 1
-    state.test_result = tester.test(state.output_dir)
+    state.test_result = tester.test(state.output_dir, state.plan)
 
 print(f"[DEBUG] Loop exited. Final: passed={state.test_result.passed}, status={state.status}")
 
