@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Celene — AI Code Assistant</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -19,7 +20,7 @@
   }
 
   /* Stars */
-  .stars, .stars2, .stars3 {
+  .stars, .stars2 {
     position: fixed;
     top: 0; left: 0;
     width: 100%; height: 100%;
@@ -49,6 +50,9 @@
     from { transform: translateY(0); }
     to { transform: translateY(-1000px); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .stars, .stars2 { animation: none; }
+  }
 
   .glow {
     position: fixed;
@@ -68,10 +72,7 @@
     padding: 50px 24px 80px;
   }
 
-  header {
-    text-align: center;
-    margin-bottom: 36px;
-  }
+  header { text-align: center; margin-bottom: 36px; }
   header h1 {
     font-size: 2.6rem;
     background: linear-gradient(90deg, #c9a4ff, #7fd9ff, #c9a4ff);
@@ -80,11 +81,7 @@
     color: transparent;
     letter-spacing: 1px;
   }
-  header p {
-    color: #b7a9e6;
-    margin-top: 8px;
-    font-size: 0.95rem;
-  }
+  header p { color: #b7a9e6; margin-top: 8px; font-size: 0.95rem; }
 
   .card {
     background: rgba(255,255,255,0.05);
@@ -95,40 +92,39 @@
     box-shadow: 0 0 40px rgba(120,60,220,0.15);
     margin-bottom: 24px;
   }
+  .card h2 {
+    font-size: 1.2rem;
+    color: #e6dcff;
+    margin-bottom: 4px;
+  }
+  .card .hint {
+    color: #a992e0;
+    font-size: 0.88rem;
+    margin-bottom: 18px;
+  }
 
   label {
     display: block;
     font-size: 0.85rem;
     color: #c9bdf0;
     margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
   }
 
-  textarea {
+  textarea, input[type="text"] {
     width: 100%;
-    min-height: 130px;
     background: rgba(10,5,30,0.5);
     border: 1px solid rgba(180,140,255,0.3);
     border-radius: 12px;
     padding: 14px;
     color: #f1ecff;
+    font-family: inherit;
     font-size: 0.95rem;
-    resize: vertical;
     outline: none;
     transition: border 0.2s;
   }
-  textarea:focus { border-color: #a97bff; }
-
-  select {
-    width: 100%;
-    background: rgba(10,5,30,0.5);
-    border: 1px solid rgba(180,140,255,0.3);
-    border-radius: 12px;
-    padding: 12px;
-    color: #f1ecff;
-    outline: none;
-  }
+  textarea { min-height: 110px; resize: vertical; }
+  textarea:focus, input[type="text"]:focus { border-color: #a97bff; }
+  input[type="text"] { padding: 12px; }
 
   .row { display: flex; gap: 16px; margin-top: 16px; flex-wrap: wrap; }
   .row > div { flex: 1; min-width: 200px; }
@@ -148,14 +144,40 @@
     transition: transform 0.15s, box-shadow 0.15s;
   }
   button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(160,110,255,0.4); }
-  button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+  button:focus-visible, textarea:focus-visible, input:focus-visible {
+    outline: 2px solid #8fd8ff;
+    outline-offset: 2px;
+  }
+  button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; box-shadow: none; }
 
   .status {
     font-size: 0.85rem;
     color: #a992e0;
     margin-top: 10px;
     min-height: 18px;
+    white-space: pre-wrap;
   }
+
+  /* Requirements display */
+  .project-name {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #d7f7ff;
+    margin-bottom: 6px;
+  }
+  .project-desc { color: #d3c9f5; line-height: 1.55; margin-bottom: 20px; }
+  .req-block { margin-top: 18px; }
+  .req-block h3 {
+    font-size: 0.95rem;
+    color: #c9a4ff;
+    margin-bottom: 8px;
+  }
+  .req-block ul { padding-left: 20px; }
+  .req-block li { margin-bottom: 6px; line-height: 1.5; color: #e4defb; }
+
+  /* Clarification questions */
+  .q-item { margin-bottom: 16px; }
+  .q-item .q-text { margin-bottom: 6px; color: #e4defb; line-height: 1.45; }
 
   pre {
     background: rgba(5,2,18,0.6);
@@ -184,6 +206,7 @@
     font-size: 0.78rem;
     margin-top: 40px;
   }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -195,79 +218,215 @@
 <div class="wrap">
   <header>
     <h1>✨ Celene</h1>
-    <p>Your AI code assistant — describe what you need, get a file back.</p>
+    <p>Describe what you need. Review the requirements, answer a few questions, then Celene builds it.</p>
   </header>
 
-  <div class="card">
-    <label for="prompt">Your Request</label>
+  <!-- Step 1: request -->
+  <div class="card" id="requestCard">
+    <label for="prompt">Your request</label>
     <textarea id="prompt" placeholder="e.g. Generate a Java Spring Boot REST API for managing books with CRUD endpoints..."></textarea>
 
     <div class="row">
       <div>
-        <label for="endpoint">Backend Endpoint</label>
-        <input id="endpoint" type="text" value="http://localhost:8000/generate"
-          style="width:100%; background: rgba(10,5,30,0.5); border: 1px solid rgba(180,140,255,0.3); border-radius: 12px; padding: 12px; color:#f1ecff; outline:none;">
+        <label for="endpoint">Backend endpoint</label>
+        <input id="endpoint" type="text" value="http://localhost:8000/generate">
       </div>
       <div>
-        <label for="filename">Output Filename</label>
-        <input id="filename" type="text" value="output.java"
-          style="width:100%; background: rgba(10,5,30,0.5); border: 1px solid rgba(180,140,255,0.3); border-radius: 12px; padding: 12px; color:#f1ecff; outline:none;">
+        <label for="filename">Output filename</label>
+        <input id="filename" type="text" value="output.java">
       </div>
     </div>
 
-    <button id="runBtn" onclick="askCelene()">Ask Celene</button>
+    <button id="analyzeBtn" onclick="analyzeRequest()">Show requirements</button>
     <div class="status" id="status"></div>
   </div>
 
-  <div class="card" id="outputCard" style="display:none;">
-    <label>Celene's Output</label>
+  <!-- Step 2: requirements -->
+  <div class="card" id="reqCard" hidden>
+    <h2>Requirements</h2>
+    <p class="hint">This is how Celene understood your request.</p>
+    <div id="reqContent"></div>
+  </div>
+
+  <!-- Step 3: questions + suggestions -->
+  <div class="card" id="qaCard" hidden>
+    <h2>Questions and suggestions</h2>
+    <p class="hint">Answer what matters to you. Blank answers are skipped and Celene uses its assumptions.</p>
+    <div id="questions"></div>
+
+    <div class="q-item">
+      <label for="suggestions">Your suggestions or extra requirements</label>
+      <textarea id="suggestions" placeholder="e.g. Use MySQL instead of H2. Add a simple HTML page for the menu. Keep authentication basic."></textarea>
+    </div>
+
+    <button id="buildBtn" onclick="startBuild()">Start build</button>
+    <div class="status" id="buildStatus"></div>
+  </div>
+
+  <!-- Step 4: output -->
+  <div class="card" id="outputCard" hidden>
+    <h2>Celene's output</h2>
+    <p class="hint">Generated project, test results and files.</p>
     <pre id="output"></pre>
     <div class="actions">
-      <button onclick="downloadOutput()">⬇ Download File</button>
-      <button class="secondary" onclick="copyOutput()">Copy to Clipboard</button>
+      <button onclick="downloadOutput()">Download file</button>
+      <button class="secondary" onclick="copyOutput()">Copy to clipboard</button>
     </div>
   </div>
 
-  <footer>Celene runs locally · connect the endpoint above to your own backend</footer>
+  <footer>Celene runs locally. Start server.py, then use this page.</footer>
 </div>
 
 <script>
 let lastOutput = "";
+let currentQuestions = [];
+let analyzedPrompt = "";
 
-async function askCelene() {
-  const prompt = document.getElementById('prompt').value.trim();
-  const endpoint = document.getElementById('endpoint').value.trim();
-  const status = document.getElementById('status');
-  const btn = document.getElementById('runBtn');
-  const outputCard = document.getElementById('outputCard');
-  const output = document.getElementById('output');
+function $(id) { return document.getElementById(id); }
+
+function baseUrl() {
+  // The endpoint field holds .../generate; /analyze sits next to it.
+  return $('endpoint').value.trim().replace(/\/generate\/?$/, '');
+}
+
+function resetAfterRequest() {
+  $('reqCard').hidden = true;
+  $('qaCard').hidden = true;
+  $('outputCard').hidden = true;
+  $('reqContent').replaceChildren();
+  $('questions').replaceChildren();
+  $('buildStatus').textContent = "";
+  currentQuestions = [];
+}
+
+function makeList(title, items) {
+  if (!items || !items.length) return null;
+  const block = document.createElement('div');
+  block.className = 'req-block';
+  const h = document.createElement('h3');
+  h.textContent = title;
+  const ul = document.createElement('ul');
+  items.forEach(t => {
+    const li = document.createElement('li');
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+  block.append(h, ul);
+  return block;
+}
+
+function renderAnalysis(a) {
+  const box = $('reqContent');
+  box.replaceChildren();
+
+  const name = document.createElement('div');
+  name.className = 'project-name';
+  name.textContent = a.project_name || "Untitled project";
+  const desc = document.createElement('p');
+  desc.className = 'project-desc';
+  desc.textContent = a.project_description || "";
+  box.append(name, desc);
+
+  [
+    makeList("Functional requirements", a.functional_requirements),
+    makeList("Non-functional requirements", a.non_functional_requirements),
+    makeList("Assumptions", a.assumptions),
+  ].forEach(b => { if (b) box.appendChild(b); });
+
+  // Clarification questions -> one input each
+  currentQuestions = a.clarification_questions || [];
+  const qBox = $('questions');
+  qBox.replaceChildren();
+  currentQuestions.forEach((q, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'q-item';
+    const text = document.createElement('div');
+    text.className = 'q-text';
+    text.textContent = q;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.id = 'answer-' + i;
+    input.setAttribute('aria-label', q);
+    input.placeholder = "Your answer (optional)";
+    wrap.append(text, input);
+    qBox.appendChild(wrap);
+  });
+
+  $('reqCard').hidden = false;
+  $('qaCard').hidden = false;
+  $('reqCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function analyzeRequest() {
+  const prompt = $('prompt').value.trim();
+  const status = $('status');
+  const btn = $('analyzeBtn');
 
   if (!prompt) {
-    status.textContent = "⚠ Please enter a request first.";
+    status.textContent = "Enter a request first.";
     return;
   }
 
+  resetAfterRequest();
   btn.disabled = true;
-  status.textContent = "Celene is thinking...";
+  status.textContent = "Celene is reading your request...";
 
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch(baseUrl() + '/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt })
     });
-
     if (!res.ok) throw new Error(`Server responded ${res.status}`);
-
     const data = await res.json();
-    // Accept either { result: "..." } or { output: "..." } or raw text
-    lastOutput = data.result || data.output || data.code || JSON.stringify(data, null, 2);
 
-    output.textContent = lastOutput;
-    outputCard.style.display = "block";
-    status.textContent = "✔ Done.";
+    if (data.type === "greeting") {
+      status.textContent = data.message;
+    } else if (data.type === "analysis") {
+      analyzedPrompt = prompt;
+      renderAnalysis(data.analysis);
+      status.textContent = "Review the requirements below, then answer the questions.";
+    } else {
+      status.textContent = "Something went wrong:\n" + (data.message || "unknown error");
+    }
   } catch (err) {
-    status.textContent = "✖ Couldn't reach backend (" + err.message + "). Make sure your local server is running at the endpoint above.";
+    status.textContent = "Couldn't reach the backend (" + err.message + "). Check that python server.py is running and the endpoint above is correct.";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function startBuild() {
+  const btn = $('buildBtn');
+  const status = $('buildStatus');
+  const outputCard = $('outputCard');
+
+  const answers = currentQuestions.map((q, i) => ({
+    question: q,
+    answer: ($('answer-' + i)?.value || "").trim()
+  }));
+  const suggestions = $('suggestions').value.trim();
+
+  btn.disabled = true;
+  outputCard.hidden = true;
+  status.textContent = "Building. Planning, writing code, testing and fixing can take a few minutes...";
+
+  try {
+    const res = await fetch(baseUrl() + '/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: analyzedPrompt, answers, suggestions })
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+
+    lastOutput = data.result || data.output || data.code || JSON.stringify(data, null, 2);
+    $('output').textContent = lastOutput;
+    outputCard.hidden = false;
+    outputCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    status.textContent = "Done.";
+  } catch (err) {
+    status.textContent = "Build failed (" + err.message + "). Check the server terminal for details.";
   } finally {
     btn.disabled = false;
   }
@@ -275,7 +434,7 @@ async function askCelene() {
 
 function downloadOutput() {
   if (!lastOutput) return;
-  const filename = document.getElementById('filename').value.trim() || "output.txt";
+  const filename = $('filename').value.trim() || "output.txt";
   const blob = new Blob([lastOutput], { type: "text/plain" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -288,8 +447,16 @@ function downloadOutput() {
 function copyOutput() {
   if (!lastOutput) return;
   navigator.clipboard.writeText(lastOutput);
-  document.getElementById('status').textContent = "✔ Copied to clipboard.";
+  $('buildStatus').textContent = "Copied to clipboard.";
 }
+
+// Editing the request invalidates the old requirements
+$('prompt').addEventListener('input', () => {
+  if (!$('reqCard').hidden) {
+    resetAfterRequest();
+    $('status').textContent = "Request changed. Click Show requirements again.";
+  }
+});
 </script>
 
 </body>

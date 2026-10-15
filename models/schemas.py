@@ -34,7 +34,7 @@ class ProjectPlan(BaseModel):
     entities: List[Entity]
     endpoints: List[Endpoint]
     tasks: List[Task]
-    tech_notes: List[str] = Field(default_factory=list)   # e.g. "Use Spring Data JPA", "H2 for dev"
+    tech_notes: List[str] = Field(default_factory=list)
 
 
 class GeneratedFile(BaseModel):

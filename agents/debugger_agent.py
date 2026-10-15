@@ -63,6 +63,15 @@ LOMBOK_JAVAC_CRASH_RE = re.compile(
 )
 MIN_SAFE_LOMBOK_VERSION = "1.18.32"
 
+# NEW: failures that happen when the project is RUN (a failed unit test or the live API
+# smoke test) as opposed to compiled.
+SMOKE_MARKER = "--- LIVE API SMOKE TEST ---"
+TEST_CLASS_NAME_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*Tests?)\b")
+STACK_NOISE_RE = re.compile(
+    r"\s*at (?:org\.junit|org\.apache|org\.mockito|org\.springframework\.test|java\.|jdk\.|sun\.|javax\.)"
+)
+MAX_RUNTIME_CONTEXT_CHARS = 70000
+
 # Common layer-name suffixes generated projects use -- stripping the last one off a
 # file's package gives a good guess at the project's base package.
 _LAYER_NAMES = {"entity", "repository", "service", "controller", "model", "dto", "config", "exception"}
@@ -602,7 +611,7 @@ def fix_compile_errors_project_wide(
 {_plan_context(project_state)}
 
 COMPILER ERRORS:
-{error_output[:6000]}
+{error_output[-6000:]}
 
 ALL CURRENT PROJECT SOURCE FILES:
 {files_block}
@@ -809,7 +818,12 @@ Return the COMPLETE corrected file content only, no explanation, no markdown fen
 Keep the same package declaration and class name -- only fix what's causing the error.
 Stay consistent with the ENTITIES field list above and with the related files: never
 rename or drop an entity field, never invent a field that is not listed, and never widen
-a generic type to Object to silence an error."""
+a generic type to Object to silence an error.
+
+CRITICAL CONSTRAINTS:
+- NEVER declare auxiliary classes (DTOs, Exceptions, Enums) inside a Controller or Service file.
+- Every class, enum, or DTO MUST reside in its own dedicated .java file under its respective package (dto/, exception/, entity/).
+- If a type is declared in multiple packages (e.g., controller.X vs dto.X), DELETE the duplicate from the controller and import the canonical type from the dto package."""
 
     fixed_content = call_llm(prompt)
 
@@ -840,6 +854,282 @@ a generic type to Object to silence an error."""
         return None
 
     return fix
+
+
+# ---------- NEW: repair of failed unit tests / failed live API smoke test ----------
+
+def is_runtime_failure(output: str) -> bool:
+    """True when the failure came from RUNNING the project (a failed unit test, or the
+    live API smoke test) rather than from compiling it. Surefire stack traces contain
+    frames like '(StudentServiceTest.java:52)', which the compile-error regex would
+    mistake for a javac error -- so these must be told apart before parsing."""
+    if SMOKE_MARKER in output:
+        return True
+    if "COMPILATION ERROR" in output:
+        return False
+    return bool(re.search(
+        r"Tests run:\s*\d+|<<<\s*(?:FAILURE|ERROR)!|\[ERROR\]\s+(?:Failures|Errors):",
+        output,
+    ))
+
+
+def _src_key(path: str) -> str:
+    """Canonical project-relative key for any path style (backslashes, drive letters,
+    absolute paths): 'src/main/java/...' / 'src/test/java/...', or e.g. 'pom.xml'."""
+    p = path.replace("\\", "/")
+    m = re.search(r"(src/(?:main|test)/.+)$", p)
+    return m.group(1) if m else p.lstrip("/")
+
+
+def _generated_by_key(project_state: ProjectState) -> dict:
+    return {_src_key(gf.path): gf for gf in project_state.developer_output.files}
+
+
+def _read_key(key: str, by_key: dict, project_root: str) -> str:
+    """Current content of a file: what is on disk if present, else the in-memory copy."""
+    resolved = os.path.join(project_root, key)
+    if os.path.exists(resolved):
+        try:
+            return open(resolved, encoding="utf-8").read()
+        except OSError:
+            pass
+    gf = by_key.get(key)
+    return (gf.content or "") if gf else ""
+
+
+def parse_failed_test_files(output: str, by_key: dict) -> list[str]:
+    """Generated test files whose class name appears in the surefire output (simple or
+    fully-qualified names both work)."""
+    names = []
+    for m in TEST_CLASS_NAME_RE.finditer(output):
+        if m.group(1) not in names:
+            names.append(m.group(1))
+    keys = []
+    for name in names:
+        for key in by_key:
+            if key.startswith("src/test/") and os.path.basename(key) == f"{name}.java" and key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _production_counterpart(test_key: str, by_key: dict) -> str | None:
+    """StudentServiceTest.java -> the generated StudentService.java under src/main."""
+    base = os.path.basename(test_key).removesuffix(".java")
+    for suffix in ("Tests", "Test"):
+        if base.endswith(suffix) and len(base) > len(suffix):
+            target = base[: -len(suffix)] + ".java"
+            for key in by_key:
+                if key.startswith("src/main/") and os.path.basename(key) == target:
+                    return key
+    return None
+
+
+def _runtime_context_keys(by_key: dict, texts: dict, test_keys: list[str], wide: bool) -> list[str]:
+    """Which files the LLM gets to see, most relevant first."""
+    keys: list[str] = []
+
+    def add(k):
+        if k and k in by_key and k not in keys:
+            keys.append(k)
+
+    for tk in test_keys:
+        prod = _production_counterpart(tk, by_key)
+        seeds = [k for k in (tk, prod) if k]
+        for k in seeds:
+            add(k)
+        seed_text = "\n".join(texts.get(k, "") for k in seeds)
+        # entities / repositories / DTOs / other services the test or class refers to
+        for k in by_key:
+            if k.startswith("src/main/java/") and re.search(
+                rf"\b{re.escape(_class_name_from_path(k))}\b", seed_text
+            ):
+                add(k)
+
+    if not keys:
+        for k in sorted(by_key):
+            if k.startswith("src/test/") and k.endswith(".java"):
+                add(k)
+
+    if wide or not test_keys:
+        main_java = sorted(
+            (k for k in by_key if k.startswith("src/main/java/")),
+            key=lambda k: (0 if "/controller/" in k else 1, k),
+        )
+        for k in main_java:
+            add(k)
+        add("src/main/resources/application.properties")
+        add("pom.xml")
+
+    return keys
+
+
+def _trim_failure_output(output: str, limit: int = 8000) -> str:
+    if SMOKE_MARKER in output:
+        return output.split(SMOKE_MARKER, 1)[1].strip()[:limit]
+    lines = [ln for ln in output.splitlines() if not STACK_NOISE_RE.match(ln)]
+    return "\n".join(lines)[:limit]
+
+
+def _write_fix_by_key(key: str, content: str, project_root: str, project_state: ProjectState) -> None:
+    """Writes the file at project_root/key and keeps project_state in sync WITHOUT
+    creating a second entry for a file that is already registered under another path
+    spelling (relative vs absolute, / vs \\)."""
+    resolved = os.path.join(project_root, key)
+    os.makedirs(os.path.dirname(resolved), exist_ok=True)
+    with open(resolved, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    files = project_state.developer_output.files
+    kept, seen = [], False
+    for gf in files:
+        if _src_key(gf.path) == key:
+            if seen:
+                continue  # drop duplicate entries for the same file
+            seen = True
+            gf.path = key
+            gf.content = content
+        kept.append(gf)
+    if not seen and files:
+        kept.append(type(files[0])(path=key, content=content))
+    project_state.developer_output.files = kept
+
+
+def fix_runtime_failures(project_state: ProjectState, project_root: str, test_result) -> tuple[list[CodeFix], str]:
+    """Repairs failures that only show up when the project RUNS: failed unit tests
+    (assertion mismatches, wrong exception messages, Mockito problems, ...) and a failed
+    live API smoke test (404 on a planned route, app not starting).
+
+    The LLM sees the failure output PLUS the failing test, the class it tests and that
+    class's collaborators, and decides which side is wrong -- the test or the
+    production code -- instead of blindly patching one file."""
+    output = test_result.raw_output or ""
+    smoke_failure = SMOKE_MARKER in output
+    failure_text = _trim_failure_output(output)
+
+    by_key = _generated_by_key(project_state)
+    texts = {k: _read_key(k, by_key, project_root) for k in by_key}
+
+    test_keys = [] if smoke_failure else parse_failed_test_files(output, by_key)
+    wide = smoke_failure or "ApplicationContext" in output or "BeanCreationException" in output
+    keys = _runtime_context_keys(by_key, texts, test_keys, wide)
+
+    blocks, used = [], 0
+    for k in keys:
+        text = texts.get(k, "")
+        if blocks and used + len(text) > MAX_RUNTIME_CONTEXT_CHARS:
+            continue
+        blocks.append(f"--- {k} ---\n{text}")
+        used += len(text)
+    files_block = "\n\n".join(blocks)
+
+    kind = "live API smoke test" if smoke_failure else "failing unit tests"
+    what = (
+        "the live API smoke test (the packaged app was started and its endpoints were called)"
+        if smoke_failure else "one or more unit tests"
+    )
+    default_cause = f"Runtime failure repair ({kind})"
+
+    prompt = f"""You are fixing a Java Spring Boot (Maven, Java 17+) project that COMPILES but FAILS WHEN RUN:
+{what} failed.
+
+{_plan_context(project_state)}
+
+FAILURE OUTPUT:
+{failure_text}
+
+PROJECT FILES (authoritative current contents):
+{files_block}
+
+Diagnose the ROOT CAUSE of every failure, then return every file that must change.
+Guidance:
+- A test and the code it tests must agree. Decide which side is wrong:
+  * Exact-wording mismatches (exception messages, error strings, formatting, status text),
+    e.g. the test expects "Student not found" but the service throws "Student not found
+    with id 5": make both sides agree. Prefer changing the TEST's expectation to match the
+    production code, unless the production wording contradicts ENTITIES/ENDPOINTS.
+  * If the production behaviour is genuinely wrong (wrong calculation, missing validation,
+    wrong status or return value, wrong exception type, missing side effect), fix the
+    PRODUCTION code. Never delete a test, and never weaken its assertions, just to make it
+    pass when it checks real behaviour.
+  * Mockito: for UnnecessaryStubbingException remove the unused stub (or use lenient());
+    for a NullPointerException on a mock or injected field, fix the test setup
+    (@Mock/@InjectMocks, constructor arguments); for argument-matcher mismatches, correct
+    the stubbing or verification.
+  * Do not change a public method signature that other files already call. If one must
+    change, update every caller.
+- For live API smoke test failures: controllers must implement EXACTLY the ENDPOINTS above
+  (same HTTP method, same path, no extra prefixes such as /v1). If the application did not
+  start, read the startup log and fix bean wiring, duplicate mappings, JPA/entity mapping,
+  application.properties or pom.xml problems.
+- Keep package declarations, class names and file paths exactly as they are. Do not
+  introduce Lombok; if a file already uses it, keep it as-is.
+- Return complete file contents -- no placeholders, no "// TODO".
+
+Respond with ONLY this JSON object:
+{{
+  "root_cause": "<one or two sentences: what was wrong and which side you changed>",
+  "files": [
+    {{"path": "<exact path from the file list above>", "content": "<full corrected file>"}}
+  ]
+}}
+
+Include ONLY files whose content actually changes."""
+
+
+
+    data = None
+    for _ in range(2):
+        raw = call_llm_json(prompt)
+        if raw.startswith(RATE_LIMIT_FLAG):
+            raise RateLimitStop(
+                f"Daily/rate token limit hit during runtime-failure repair, even after "
+                f"retrying with backoff. Details: {raw}"
+            )
+        if raw.startswith("__LLM_CALL_FAILED__"):
+            return [], default_cause
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                data = parsed
+                break
+        except json.JSONDecodeError as e:
+            print(f"  Runtime-failure repair returned invalid JSON ({e}); retrying...")
+    if data is None:
+        return [], default_cause
+
+    root_cause = data.get("root_cause", "(not reported)")
+    print(f"  Root cause: {root_cause}")
+
+    fixes = []
+    for entry in data.get("files", []):
+        path = entry.get("path")
+        content = entry.get("content")
+        if not path or not (content or "").strip():
+            continue
+
+        key = _src_key(str(path))
+        if ".." in key.split("/"):
+            print(f"  Skipping suspicious path from LLM: {path}")
+            continue
+        if key not in by_key and not key.startswith("src/"):
+            print(f"  Skipping out-of-tree path from LLM: {path}")
+            continue
+
+        content = _repair_double_escaping(content)
+        if key in texts and content.strip() == texts[key].strip():
+            continue  # the LLM "fixed" nothing in this file
+
+        verb = "Updated" if key in by_key else "Created"
+        _write_fix_by_key(key, content, project_root, project_state)
+        print(f"  {verb} {key}")
+        fixes.append(CodeFix(
+            file_path=key,
+            updated_content=content,
+            explanation=f"{verb} during {kind} repair. Root cause: {root_cause}",
+            confidence="high",
+        ))
+
+    return fixes, f"{default_cause}: {root_cause}"
 
 
 def run_debugger_agent(project_state: ProjectState) -> ProjectState:
@@ -887,7 +1177,12 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
                 )
         return project_state
 
-    compile_errors = parse_maven_errors(test_result.raw_output)
+    # NEW: tell "the project failed when RUN" (unit test / smoke test) apart from "the
+    # project failed to COMPILE" before parsing. A test stack trace contains frames like
+    # "(StudentServiceTest.java:52)" which the compile-error regex would mistake for a
+    # javac error in a file called "(StudentServiceTest.java".
+    runtime_failure = is_runtime_failure(test_result.raw_output)
+    compile_errors = [] if runtime_failure else parse_maven_errors(test_result.raw_output)
     missing_classes = parse_missing_classes(test_result.raw_output)
     fixes = []
 
@@ -916,7 +1211,11 @@ def run_debugger_agent(project_state: ProjectState) -> ProjectState:
         # STEP 2: repair remaining compile errors with the whole project in context, so
         # the fix can land in the file that actually causes the error rather than the
         # file javac happens to blame. Falls back to isolated per-file patching.
-        if compile_errors:
+        if runtime_failure:
+            # NEW: failed unit test(s) or failed live API smoke test.
+            runtime_fixes, root_cause = fix_runtime_failures(project_state, project_root, test_result)
+            fixes.extend(runtime_fixes)
+        elif compile_errors:
             grouped = group_by_file(compile_errors)
             project_fixes = fix_compile_errors_project_wide(
                 project_state, project_root, test_result.raw_output
