@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 
 from models.schemas import DeveloperOutput
 
@@ -61,9 +62,35 @@ def _dedupe_files(files: list) -> list[tuple[str, object]]:
     return deduped
 
 
+def _reset_project_dir(project_root: str, base_dir: str) -> None:
+    """NEW: Deletes the project folder from a previous run so stale files (an old
+    StudentControllerTest.java, an old StudentServiceImpl.java, ...) cannot mix with
+    the new run and cause compile or test failures that have nothing to do with the
+    freshly generated code. Only ever deletes a folder strictly INSIDE base_dir."""
+    try:
+        base = os.path.abspath(base_dir)
+        target = os.path.abspath(project_root)
+        if target == base or os.path.commonpath([base, target]) != base:
+            return  # refuse to delete anything outside base_dir (or base_dir itself)
+    except ValueError:
+        return  # different drives on Windows -- not inside base_dir
+
+    if os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
+        if os.path.isdir(target) and os.listdir(target):
+            print(f"  !! FILE_WRITER WARNING: could not fully clear '{target}' (files in use? "
+                  f"close any IDE or running app using it). Stale files from a previous run "
+                  f"may still be there.")
+        else:
+            print(f"  [file_writer] Cleared previous output folder: {target}")
+
+
 def write_project_files(developer_output: DeveloperOutput, project_name: str, base_dir: str = "output") -> str:
     safe_name = project_name.lower().replace(" ", "_")
     project_root = os.path.join(base_dir, safe_name)
+
+    # NEW: always start from an empty project folder.
+    _reset_project_dir(project_root, base_dir)
 
     deduped = _dedupe_files(developer_output.files)
 

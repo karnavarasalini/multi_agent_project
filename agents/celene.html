@@ -200,6 +200,74 @@
     border: 1px solid rgba(180,140,255,0.4);
   }
 
+  /* Retry notice for failed builds */
+  .retry-box {
+    margin-top: 16px;
+    padding: 14px 16px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,170,140,0.4);
+    background: rgba(255,120,90,0.08);
+  }
+  .retry-box p { color: #ffd9cc; font-size: 0.88rem; line-height: 1.5; }
+  .retry-box button { margin-top: 12px; }
+
+  /* New-user guide */
+  .guide summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #e6dcff;
+  }
+  .guide summary::-webkit-details-marker { display: none; }
+  .guide summary::after { content: "Hide"; font-size: 0.8rem; font-weight: 400; color: #a992e0; }
+  .guide:not([open]) summary::after { content: "Show"; }
+  .guide summary:focus-visible { outline: 2px solid #8fd8ff; outline-offset: 4px; border-radius: 6px; }
+  .guide-intro { color: #a992e0; font-size: 0.88rem; margin: 4px 0 6px; }
+  .guide-block { margin-top: 22px; }
+  .guide-block h3 { font-size: 0.95rem; color: #c9a4ff; margin-bottom: 10px; }
+  .guide-block p, .guide-block li { color: #e4defb; line-height: 1.5; font-size: 0.9rem; }
+  .guide-block ul { padding-left: 20px; }
+  .guide-block li { margin-bottom: 5px; }
+
+  .examples { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+  .chip {
+    margin: 0;
+    width: auto;
+    padding: 12px 14px;
+    text-align: left;
+    font-weight: 400;
+    letter-spacing: 0;
+    color: #e4defb;
+    background: rgba(10,5,30,0.45);
+    border: 1px solid rgba(180,140,255,0.3);
+    border-radius: 12px;
+  }
+  .chip:hover { transform: translateY(-2px); border-color: #a97bff; box-shadow: 0 6px 20px rgba(160,110,255,0.25); }
+  .chip strong { display: block; color: #d7f7ff; font-size: 0.92rem; margin-bottom: 4px; }
+  .chip span { display: block; font-size: 0.8rem; color: #b7a9e6; line-height: 1.4; }
+
+  .flow { list-style: none; counter-reset: step; display: grid; gap: 12px; padding: 0; }
+  .flow li { counter-increment: step; display: flex; gap: 12px; align-items: flex-start; margin: 0; }
+  .flow li::before {
+    content: counter(step);
+    flex: 0 0 26px;
+    height: 26px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #10061f;
+    background: linear-gradient(90deg, #c9a4ff, #8fd8ff);
+  }
+  .flow b { color: #d7f7ff; }
+
   footer {
     text-align: center;
     color: #7a6aa8;
@@ -220,6 +288,63 @@
     <h1>✨ Celene</h1>
     <p>Describe what you need. Review the requirements, answer a few questions, then Celene builds it.</p>
   </header>
+
+  <!-- New-user guide -->
+  <details class="card guide" id="guide" open>
+    <summary>New to Celene? Start here</summary>
+    <p class="guide-intro">Celene turns one plain-English request into a complete Java Spring Boot project that is compiled, tested and repaired automatically.</p>
+
+    <div class="guide-block">
+      <h3>1. What to ask</h3>
+      <p style="margin-bottom:12px;">Click an example to fill the request box, or write your own.</p>
+      <div class="examples">
+        <button type="button" class="chip" data-prompt="Create a Spring Boot REST API for Hotel Room Booking with a Room entity (id, roomNumber, type, pricePerNight, isAvailable) and an endpoint to change room availability.">
+          <strong>Hotel Room Booking</strong>
+          <span>One entity with a custom endpoint to change availability.</span>
+        </button>
+        <button type="button" class="chip" data-prompt="Create a Spring Boot REST API for Student Enrollment with Student and Course entities, and endpoints to enroll a student in a course, drop a course, and list a student's courses.">
+          <strong>Student Enrollment</strong>
+          <span>Two related entities with enroll and drop endpoints.</span>
+        </button>
+        <button type="button" class="chip" data-prompt="Create a Spring Boot REST API for a Note Taking app with a Note entity (id, title, content, createdAt), CRUD endpoints, and search by title.">
+          <strong>Note Taking</strong>
+          <span>CRUD endpoints plus a search endpoint.</span>
+        </button>
+        <button type="button" class="chip" data-prompt="Generate a Java Spring Boot REST API for managing books with CRUD endpoints.">
+          <strong>Book Manager</strong>
+          <span>The simplest starting point: plain CRUD.</span>
+        </button>
+      </div>
+      <ul style="margin-top:14px;">
+        <li>Name what you are building, for example "Hotel Room Booking".</li>
+        <li>List the entities and their fields, such as Room (id, roomNumber, type).</li>
+        <li>Say which endpoints you need, such as CRUD or a special action.</li>
+        <li>Don't worry about covering everything. Celene asks follow-up questions and you can add suggestions before the build starts.</li>
+      </ul>
+    </div>
+
+    <div class="guide-block">
+      <h3>2. What happens after you click</h3>
+      <ol class="flow">
+        <li><div><b>Requirements.</b> Celene reads your request, lists the requirements and assumptions, and asks a few questions.</div></li>
+        <li><div><b>Plan.</b> It decides the entities, fields, endpoints and the list of files to write.</div></li>
+        <li><div><b>Code.</b> It writes every file: entities, repositories, services, controllers, tests, pom.xml and application.properties.</div></li>
+        <li><div><b>Test.</b> It compiles the project, runs the unit tests, then starts the app and calls its endpoints.</div></li>
+        <li><div><b>Fix.</b> If anything fails, it reads the error logs and repairs the code, for up to 5 rounds. If the build still fails, press Retry and Celene tries again with a different approach, without rebuilding from scratch.</div></li>
+      </ol>
+    </div>
+
+    <div class="guide-block">
+      <h3>3. What you get</h3>
+      <ul>
+        <li>A complete Maven Spring Boot project with entities, repositories, services and controllers.</li>
+        <li>JUnit and Mockito unit tests for the generated code.</li>
+        <li>The compile and test results, including how many tests passed.</li>
+        <li>A live check of the running API's endpoints.</li>
+        <li>A summary of what was built and any fixes that were needed, shown in the output box at the end. Allow a few minutes for a build.</li>
+      </ul>
+    </div>
+  </details>
 
   <!-- Step 1: request -->
   <div class="card" id="requestCard">
@@ -267,6 +392,13 @@
   <div class="card" id="outputCard" hidden>
     <h2>Celene's output</h2>
     <p class="hint">Generated project, test results and files.</p>
+
+    <!-- Shown only when the build failed -->
+    <div class="retry-box" id="retryBox" hidden>
+      <p>This build did not pass all its checks. Retry keeps the generated project, re-runs the tests, and asks Celene to fix what failed using a different approach from last time. It does not rebuild from scratch.</p>
+      <button id="retryBtn" onclick="retryBuild()">Retry and fix</button>
+    </div>
+
     <pre id="output"></pre>
     <div class="actions">
       <button onclick="downloadOutput()">Download file</button>
@@ -281,11 +413,12 @@
 let lastOutput = "";
 let currentQuestions = [];
 let analyzedPrompt = "";
+let lastRunId = "";
 
 function $(id) { return document.getElementById(id); }
 
 function baseUrl() {
-  // The endpoint field holds .../generate; /analyze sits next to it.
+  // The endpoint field holds .../generate; /analyze and /retry sit next to it.
   return $('endpoint').value.trim().replace(/\/generate\/?$/, '');
 }
 
@@ -293,10 +426,12 @@ function resetAfterRequest() {
   $('reqCard').hidden = true;
   $('qaCard').hidden = true;
   $('outputCard').hidden = true;
+  $('retryBox').hidden = true;
   $('reqContent').replaceChildren();
   $('questions').replaceChildren();
   $('buildStatus').textContent = "";
   currentQuestions = [];
+  lastRunId = "";
 }
 
 function makeList(title, items) {
@@ -396,6 +531,20 @@ async function analyzeRequest() {
   }
 }
 
+// Shows a build result and the Retry box when the build failed
+function showResult(data) {
+  const outputCard = $('outputCard');
+  lastOutput = data.result || data.output || data.code || JSON.stringify(data, null, 2);
+  $('output').textContent = lastOutput;
+
+  lastRunId = data.run_id || "";
+  $('retryBox').hidden = !(data.status === "failed" && lastRunId);
+
+  outputCard.hidden = false;
+  outputCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return data.status;
+}
+
 async function startBuild() {
   const btn = $('buildBtn');
   const status = $('buildStatus');
@@ -409,6 +558,7 @@ async function startBuild() {
 
   btn.disabled = true;
   outputCard.hidden = true;
+  $('retryBox').hidden = true;
   status.textContent = "Building. Planning, writing code, testing and fixing can take a few minutes...";
 
   try {
@@ -420,15 +570,49 @@ async function startBuild() {
     if (!res.ok) throw new Error(`Server responded ${res.status}`);
     const data = await res.json();
 
-    lastOutput = data.result || data.output || data.code || JSON.stringify(data, null, 2);
-    $('output').textContent = lastOutput;
-    outputCard.hidden = false;
-    outputCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    status.textContent = "Done.";
+    const buildStatus = showResult(data);
+    status.textContent = buildStatus === "failed"
+      ? "The build finished but some checks still fail. You can press Retry and fix."
+      : "Done.";
   } catch (err) {
     status.textContent = "Build failed (" + err.message + "). Check the server terminal for details.";
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function retryBuild() {
+  if (!lastRunId) return;
+  const btn = $('retryBtn');
+  const buildBtn = $('buildBtn');
+  const status = $('buildStatus');
+
+  btn.disabled = true;
+  buildBtn.disabled = true;
+  status.textContent = "Retrying. Celene is re-testing the project and fixing what failed. This can take a few minutes...";
+
+  try {
+    const res = await fetch(baseUrl() + '/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_id: lastRunId })
+    });
+    if (!res.ok) throw new Error(`Server responded ${res.status}`);
+    const data = await res.json();
+
+    const buildStatus = showResult(data);
+    if (buildStatus === "success") {
+      status.textContent = "Fixed. The project now passes its checks.";
+    } else if (buildStatus === "failed") {
+      status.textContent = "Still failing after the retry. You can press Retry again, or change your request and rebuild.";
+    } else {
+      status.textContent = "Retry finished.";
+    }
+  } catch (err) {
+    status.textContent = "Retry failed (" + err.message + "). Check the server terminal for details.";
+  } finally {
+    btn.disabled = false;
+    buildBtn.disabled = false;
   }
 }
 
@@ -457,6 +641,28 @@ $('prompt').addEventListener('input', () => {
     $('status').textContent = "Request changed. Click Show requirements again.";
   }
 });
+
+// New-user guide: example prompts fill the request box
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    const p = $('prompt');
+    p.value = chip.dataset.prompt;
+    p.dispatchEvent(new Event('input'));
+    p.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    p.focus({ preventScroll: true });
+  });
+});
+
+// New-user guide: open on the first visit, collapsed on later visits
+(function () {
+  try {
+    if (localStorage.getItem('celeneGuideSeen')) {
+      $('guide').open = false;
+    } else {
+      localStorage.setItem('celeneGuideSeen', '1');
+    }
+  } catch (e) { /* storage unavailable: leave the guide open */ }
+})();
 </script>
 
 </body>

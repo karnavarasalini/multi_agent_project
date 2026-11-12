@@ -82,3 +82,8 @@ class ProjectState(BaseModel):
     max_iterations: int = 5
     status: str = "in_progress"   # "in_progress" | "success" | "failed"
     output_dir: str = "output/generated-project"
+
+    # NEW: set by server.py's /retry endpoint before a debug pass. Non-empty only on a
+    # retry; run_debugger_agent reads it to tell the LLM earlier fixes already failed
+    # and what was already tried, so it doesn't repeat them.
+    retry_note: str = ""
